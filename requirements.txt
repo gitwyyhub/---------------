@@ -1,0 +1,10 @@
+numpy>=1.24.0
+matplotlib>=3.7.0
+Pillow>=9.5.0
+scikit-learn>=1.3.0
+opencv-python>=4.8.0
+onnxruntime>=1.15.0
+PyQt5>=5.15.0
+
+# PyTorch (install manually due to Python 3.14 compatibility):
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/nightly/cpu
