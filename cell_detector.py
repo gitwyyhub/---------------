@@ -20,8 +20,65 @@ def _imread_unicode(image_path):
     return cv2.imdecode(buf, cv2.IMREAD_COLOR)
 
 
+def _separate_cells_by_watershed(thresh, original_img, min_area=200):
+    contours = []
+    orig_contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL,
+                                        cv2.CHAIN_APPROX_SIMPLE)
+
+    for cnt in orig_contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area:
+            continue
+
+        if area < min_area * 3:
+            contours.append(cnt)
+            continue
+
+        mask = np.zeros(thresh.shape, dtype=np.uint8)
+        cv2.drawContours(mask, [cnt], -1, 255, -1)
+
+        dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+        if dist.max() == 0:
+            contours.append(cnt)
+            continue
+
+        dist_norm = cv2.normalize(dist, None, 0, 1.0, cv2.NORM_MINMAX)
+        _, sure_fg = cv2.threshold(dist_norm, 0.4, 255, cv2.THRESH_BINARY)
+        sure_fg = np.uint8(sure_fg)
+
+        kernel_bg = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        sure_bg = cv2.dilate(mask, kernel_bg, iterations=2)
+        unknown = cv2.subtract(sure_bg, sure_fg)
+
+        n_labels, markers = cv2.connectedComponents(sure_fg)
+        if n_labels <= 1:
+            contours.append(cnt)
+            continue
+
+        markers = markers + 1
+        markers[unknown == 255] = 0
+        markers = cv2.watershed(original_img, markers)
+
+        split_contours = []
+        for label in range(2, markers.max() + 1):
+            lmask = np.uint8(markers == label) * 255
+            cnts, _ = cv2.findContours(lmask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+            for c in cnts:
+                if cv2.contourArea(c) >= min_area:
+                    split_contours.append(c)
+
+        if len(split_contours) >= 2:
+            contours.extend(split_contours)
+        else:
+            contours.append(cnt)
+
+    return contours
+
+
 def detect_cells(image_path, model, transform, device='cpu',
-                 min_area=200, max_area=50000):
+                 min_area=200, max_area=50000, use_watershed=True,
+                 class_names=None, class_names_cn=None, class_colors=None):
     img = _imread_unicode(image_path)
     if img is None:
         raise ValueError(f'无法读取图像: {image_path}')
@@ -38,11 +95,21 @@ def detect_cells(image_path, model, transform, device='cpu',
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_SIMPLE)
+    if use_watershed:
+        contours = _separate_cells_by_watershed(thresh, img, min_area=min_area)
+    else:
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+
+    if class_names is None:
+        class_names = CLASS_NAMES
+    if class_names_cn is None:
+        class_names_cn = CLASS_NAMES_CN
+    if class_colors is None:
+        class_colors = CLASS_COLORS
 
     detections = []
-    counts = {'Platelets': 0, 'RBC': 0, 'WBC': 0}
+    counts = {name: 0 for name in class_names}
 
     for contour in contours:
         area = cv2.contourArea(contour)
@@ -69,27 +136,29 @@ def detect_cells(image_path, model, transform, device='cpu',
             probs = torch.nn.functional.softmax(output, dim=1)
             pred_class = torch.argmax(probs, dim=1).item()
             confidence = probs[0, pred_class].item()
+            all_scores = probs[0].cpu().numpy().tolist()
 
-        class_name = CLASS_NAMES[pred_class]
+        class_name = class_names[pred_class]
         counts[class_name] += 1
-        detections.append((x1, y1, x2 - x1, y2 - y1, class_name, confidence))
+        detections.append((x1, y1, x2 - x1, y2 - y1, class_name, confidence, all_scores))
 
     result = original.copy()
-    for (x, y, bw, bh, class_name, confidence) in detections:
-        color = CLASS_COLORS[class_name]
+    for (x, y, bw, bh, class_name, confidence, _) in detections:
+        color = class_colors[class_name]
         cv2.rectangle(result, (x, y), (x + bw, y + bh), color, 2)
         label = f'{class_name} {confidence:.0%}'
         cv2.putText(result, label, (x, max(y - 5, 15)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
 
+    box_h = 10 + len(class_names) * 25
     overlay = result.copy()
-    cv2.rectangle(overlay, (5, 5), (200, 105), (0, 0, 0), -1)
+    cv2.rectangle(overlay, (5, 5), (200, box_h), (0, 0, 0), -1)
     result = cv2.addWeighted(overlay, 0.5, result, 0.5, 0)
 
     y_offset = 28
-    for class_name in CLASS_NAMES:
-        color = CLASS_COLORS[class_name]
-        cn_name = CLASS_NAMES_CN[CLASS_NAMES.index(class_name)]
+    for class_name in class_names:
+        color = class_colors[class_name]
+        cn_name = class_names_cn[class_names.index(class_name)]
         text = f'{cn_name} ({class_name}): {counts[class_name]}'
         cv2.putText(result, text, (15, y_offset),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)

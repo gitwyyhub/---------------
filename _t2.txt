@@ -1,0 +1,6 @@
+small: scaled=200x120 last=200x200
+large (no resizeEvent): scaled=900x540
+PASS: paintEvent self-corrects when resizeEvent missed
+sizeHint=1000x600
+PASS: sizeHint returns original pixmap size
+ALL PASS

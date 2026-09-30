@@ -1,0 +1,5 @@
+PASS: setPixmap->paint caches 500x300
+PASS: resizeEvent invalidates cache, paint recomputes 500x300
+PASS: tall resize gives 400x240
+PASS: ClickableLabel scale=0.500
+ALL PASS
